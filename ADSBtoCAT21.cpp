@@ -462,12 +462,12 @@ void ShowADSBList()
     if (bMODERN) printf("Generating Modern CAT21\r\n");
     else printf("Generating SITAWARE CAT21\r\n");
 
-    printf("Flight     ICAO     Cat    Squawk  Lat [d.d]  Lon [d.d]   IAS  GndSpd   HdgT #Updates    Age    TN   r_dst   r_dir\r\n");
-    printf("--------------------------------------------------------------------------------------------------------------------\r\n");
+    printf("Flight   ICAO      Cat      Squawk  Lat [d.d]  Lon [d.d]   IAS  GndSpd   HdgT #Updates    Age    TN   r_dst   r_dir\r\n");
+    printf("----------------------------------------------------------------------------------------------------------------------\r\n");
     for (aircraft_ADSB ac : ACList)
     {
         if ((ac.ias < 0) || (ac.ias > 1000))
-            sprintf_s(ias_s, "----");
+            sprintf_s(ias_s, " ---");
         else sprintf_s(ias_s, "%4d", ac.ias);
 
         if ((ac.true_heading < 0) || (ac.true_heading > 360))
@@ -480,15 +480,15 @@ void ShowADSBList()
             sprintf_s(flight_s, "------- ");
 
         if (ac.categoryString.size() > 0)
-            sprintf_s(Cat_s, "%s", ac.categoryString.c_str());
+            sprintf_s(Cat_s, "%7s", ac.categoryString.c_str());
         else
-            sprintf_s(Cat_s, "-----");
+            sprintf_s(Cat_s, "-------");
 
-        printf("%s   %s   %s  %4s    %03.4f    %09.4f  %s   %4.1f  %s      %3d    %3d %5d   ",
+        printf("%s %s  %s    %4s    %03.4f    %09.4f  %s   %4.1f  %s      %3d    %3d %5d   ",
             flight_s, ac.hex.c_str(),  Cat_s, ac.squawk.c_str(), ac.lat, ac.lon, ias_s, ac.gs, HdgT_s, ac.NumUpdates, ac.age,ac.CAT21TrackNumber);
         printf("%6.2f  %6.2f\r\n", ac.r_dst, ac.r_dir);
     }
-    printf("--------------------------------------------------------------------------------------------------------------------\r\n");
+    printf("----------------------------------------------------------------------------------------------------------------------\r\n");
 
 }
 
@@ -505,32 +505,37 @@ void mainConsoleLoop()
             switch (ch)
             {
             case 'd':
+            case 'D':
                 debug = !debug;
                 printf("Debug is %d\r\n", debug);
                 break;
             case 'l':
+            case 'L':
                 ShowADSBList();
                 break;
             case 'p':
+            case 'P':
                 clear();
                 ShowADSBList();
                 bPeriodicList = !bPeriodicList;
                 if (bPeriodicList) printf("Periodic List On\r\n");
                 else printf("Periodic List Off\r\n");
-
                 break;
             case 's':
+            case 'S':
                 ++(int&)sortBy;
                 if (sortBy >= numSortTypes) sortBy = AGE;
                 clear();
                 ShowADSBList();
                 break;
             case 't':
+            case 'T':
                 bMODERN = !bMODERN;
                 if (bMODERN) printf("Switched to Modern CAT21\r\n");
                 else printf("Switched to SITAWARE CAT21\r\n");
                 break;
             case 'x':
+            case 'X':
                 done = true;
                 break;
 
@@ -900,7 +905,7 @@ void ExpandCategory(std::string cat, std::string& catStr)
         else if (cat[1] == '1') catStr = "Light";
         else if (cat[1] == '2') catStr = "Small";
         else if (cat[1] == '3') catStr = "Large";
-        else if (cat[1] == '4') catStr = "High Vortex";
+        else if (cat[1] == '4') catStr = "Hi Vtx";
         else if (cat[1] == '5') catStr = "Heavy";
         else if (cat[1] == '6') catStr = "Hi Perf";
         else if (cat[1] == '7') catStr = "Rotor";
