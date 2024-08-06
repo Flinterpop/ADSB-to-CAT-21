@@ -10,7 +10,7 @@ void initFRN();
 void InitADSB();
 void CleanUpADSB();
 
-bool BuildCAT21FromADSB(aircraft *ADSB_AC);
+bool BuildCAT21FromADSB(aircraft_ADSB *ADSB_AC);
 
 void SetupModernCAT21();
 int CreateCAT21(byte *m);

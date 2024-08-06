@@ -8,7 +8,7 @@
 #include <sysinfoapi.h>
 
 
-struct aircraft
+struct aircraft_ADSB
 {
     bool bTrackValid;
     bool bMagValid;
@@ -40,7 +40,7 @@ struct aircraft
     int nic; //avigation Integrity Category (2.2.3.2.7.2.6)
     int rc; //Radius of Containment, meters; a measure of position integrity derived from NIC & supplementary bits. (2.2.3.2.7.2.6, Table 2-69)
     double seen_pos; // how long ago(in seconds before “now”) the position was last updated
-    double r_dist;
+    double r_dst;
     double r_dir;
     int nic_baro; //Navigation Integrity Category for Barometric Altitude (2.2.5.1.35)
     int nac_p; //Navigation Accuracy for Position (2.2.5.1.35)
