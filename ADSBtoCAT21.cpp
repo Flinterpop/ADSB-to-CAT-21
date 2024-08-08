@@ -1,7 +1,7 @@
 
 //#define _WIN32
 
-#define BMG_VERSION 1.1
+#define BMG_VERSION 1.2
 
 #pragma comment (lib, "Ws2_32.lib")
 
@@ -19,7 +19,6 @@
 #include <sysinfoapi.h>
 #include <conio.h>
 
-//#include <system>
 
 
 
@@ -27,30 +26,41 @@
 
 struct aircraft_ADSB
 {
-    bool bTrackValid;
-    bool bMagValid;
-    bool bTrueValid;
+    //ADSB fields from JSON
 
     double now;  // The time this file was generated, in seconds since Jan 1 1970 00:00:00 GMT (the Unix epoch)
     std::string hex; //the 24-bit ICAO identifier of the aircraft, as 6 hex digits. The identifier may start with ‘~’, this means that the address is a non-ICAO address (e.g. from TIS-B).
     std::string type; //type of underlying messages / best source of current data for this position / aircraft: ( order of which data is preferentially used )
     std::string flight;  //callsign, the flight name or aircraft registration as 8 chars (2.2.8.2.6)
     int alt_baro; //the aircraft barometric altitude in feet as a number OR “ground” as a string
+    bool bHasAltBaro = false;
     int alt_geom; //geometric (GNSS / INS) altitude in feet referenced to the WGS84 ellipsoid
+    bool bHasAltGeom = false;
     double gs; //ground speed in knots
+    bool bHasGndSpd = false;
     int ias;
+    bool bHasIAS = false;
     int tas;
+    bool bHasTAS = false;
     double mach;
+    bool bHasMach = false;
     double track; //true track over ground in degrees (0-359)
+    bool bHasTrack = false;
+    
     double track_Rate;
     double mag_heading;
+    bool bHasMagHdg = false;
+    
     double true_heading;
+    bool bHasTrueHdg = false;
+    
     double nav_heading;
+    bool bHasNavHdg = false;
     double roll;
     int baro_rate; //Rate of change of barometric altitude, feet/minute
     int geom_rate; //Rate of change of GPS altitude, feet/minute
     std::string squawk; //Mode A code (Squawk), encoded as 4 octal digits
-    bool hasSquawk = false;
+    bool bHasSquawk = false;
     std::string emergency; //ADS-B emergency/priority status, a superset of the 7×00 squawks (2.2.3.2.7.8.1.1) (none, general, lifeguard, minfuel, nordo, unlawful, downed, reserved)
     std::string category; // emitter category to identify particular aircraft or vehicle classes (values A0 – D7) (2.2.3.2.5.2)
     double lat; //the aircraft position in decimal degrees
@@ -73,20 +83,23 @@ struct aircraft_ADSB
     double seen;  //how long ago (in seconds before “now”) a message was last received from this aircraft
     double rssi; //recent average RSSI (signal power), in dbFS; this will always be negative.
 
-    //int HEX;
+    //derived internal fields
+    std::string categoryString;
+
+
+    // track metadata
     int NumUpdates = 0;
+    int age = 0;
 
     SYSTEMTIME nowSystem;
     char nowAsString[25];
-    int age = 0;
 
-    std::string categoryString;
-    bool markForDelete = false;
-
-
+    //CAT 21 fields
     int CAT21TrackNumber;
-
-
+    char ACIdent[8];
+    int ICAO;
+    int Mode3;
+    int EmitterCatagory;
 };
 
 #define FRN1 0b10000000
@@ -144,8 +157,6 @@ constexpr int numSortTypes = static_cast<int>(LAST_ITEM_SENTINEL);
 SORT_BY sortBy = FLIGHT;
 
 
-
-
 enum MSG_STATE { MANDATORY, OPT, NOTIMPLEMENTED };
 
 struct _MsgDetCAT21
@@ -187,8 +198,8 @@ struct _MsgDetCAT21 MsgDetSitaware[] = {
     {"FRN28: I021/131 Signal Amplitude",MSG_STATE::NOTIMPLEMENTED},
 };
 
-
 //This is compliant to ASX CAT 21 V2.6 21 Dec 2021. Checked 5 Aug 2024
+/*
 struct _MsgDetCAT21 MsgDetModern[] = {
     // MANDATORY means Mandatory in ASX 21 Standard, OPT means optional in the standard and has been implemented in this application, 
     // NOTIMPLEMENTED means optional in the ASX21 standard and not implemented in this application.
@@ -212,8 +223,8 @@ struct _MsgDetCAT21 MsgDetModern[] = {
     {"FRN18: I021/210 MOPS Version",MSG_STATE::NOTIMPLEMENTED},
     {"FRN19: I021/070 Mode 3/A",MSG_STATE::OPT},
     {"FRN20: I021/230 Roll Angle",MSG_STATE::NOTIMPLEMENTED},
-    {"FRN21: I021/145 Flight Level",MSG_STATE::MANDATORY},
-    {"FRN22: I021/152 Magnetic Heading",MSG_STATE::NOTIMPLEMENTED},
+    {"FRN21: I021/145 Flight Level",MSG_STATE::OPT},
+    {"FRN22: I021/152 Magnetic Heading",MSG_STATE::OPT},
     {"FRN23: I021/200 Target Status",MSG_STATE::NOTIMPLEMENTED},
     {"FRN24: I021/155 Baro Verical Rate",MSG_STATE::MANDATORY},
     {"FRN25: I021/157 Geom Vertical rate",MSG_STATE::NOTIMPLEMENTED},
@@ -241,28 +252,65 @@ struct _MsgDetCAT21 MsgDetModern[] = {
     {"FRN47: not used",MSG_STATE::NOTIMPLEMENTED },
     {"FRN48: RE - Reserved Expansion Field",MSG_STATE::NOTIMPLEMENTED },
     {"FRN49: SP - Special Purpose Field",MSG_STATE::NOTIMPLEMENTED }
-
-
 };
-
-
-
+*/
 
 #define BUFLEN 1510  
+byte _MSG[1500];
+int _MSGLength;
+
 static sockaddr_in m_server;
 static int m_client_socket;
-
 static SOCKET TCPClientSocket;
 
+char CAT21_IP[20] = "239.255.1.1";
+int CAT21_Port = 5055;
+char ADSB_IP[20] = "192.168.1.133";
+int ADSB_Port = 30154;
+
+int RxPacketCount = 0;
+int TxPacketCount = 0;
+int Cat21MsgCount = 0;
+
+
+//default ASTERIX details - overidden by CAT21.ini if present
+int sac = 206;
+int sic = 102;
+
+int TrackNumberStart = 200;
+
+std::vector<aircraft_ADSB> ACList;
+
+HANDLE ptrTimerHandleSendAircraft;
+int refreshPeriod = 2;
+int refreshCounter = 4;
+int dropAfterAge = 60;
+
+bool bMODERN = true;
+bool bPeriodicList = false;
+bool debug = false;
+
+int index = 0;
+//int NumFRN;
+
+
+
+
+
+
+
+
+//forward declarations
 bool initialise_winsock();
 void closeandclean_winsock();
 SOCKET OpenTCPServerSocket(char* host, u_short port);
-int StartADSB(const char* host, unsigned int port);
 bool OpenSocket(char* ip, u_short port);
 bool SendUDP(char* buffer, int len);
-void ExpandCategory(std::string cat, std::string& catStr);
+
 void UnixTimeToFileTime(time_t t, LPFILETIME pft);
 
+int StartADSBThread(const char* host, unsigned int port);
+int ExpandCategory(std::string cat, std::string& catStr);
 aircraft_ADSB *parseJSON(const char* jsonString);
 void UpdateAllAircraftPositions(aircraft_ADSB* ExistingAC, aircraft_ADSB ac);
 aircraft_ADSB* FindAircraftByHex(std::string hex);
@@ -270,108 +318,26 @@ aircraft_ADSB* FindAircraftByHex(std::string hex);
 bool compareAC(aircraft_ADSB left, aircraft_ADSB  right);
 void clear();
 
-
-//void initFRN();
-//void InitADSB();
-//void CleanUpADSB();
-
-bool BuildCAT21FromADSB(aircraft_ADSB* ADSB_AC);
-
-//void SetupModernCAT21();
-int CreateCAT21(byte* m);
-void CreateCAT21Modern(); //this is compliant to V2.X
-
+int BuildCAT21FromADSB(aircraft_ADSB* ADSB_AC);
+int CreateCAT21Modern(aircraft_ADSB* ADSB_AC); //this is compliant to V2.X
+int CreateCAT21SITAWARE(aircraft_ADSB* ADSB_AC);
 void ShowADSBList();
 
 
 
 
-std::vector<aircraft_ADSB> ACList;
-char CAT21_IP[20] = "239.255.1.1";
-int CAT21_Port = 5055;
-char ADSB_IP[20] = "192.168.1.133";
-int ADSB_Port = 30154;
-
-extern byte _MSG[1500];
-extern int _MSGLength;
-
-/////
-
-//default ASTERIX details - overidden by CAT21.ini if present
-int sac = 206;
-int sic = 102;
-
-//Test Aircraft Details
-char ACIdent[8] = "WJ1243";
-int ICAO = 0xC4321;
-int Mode3 = 02647;
-
-double latitude = 46.00;
-double longitude = -70.00;
-int alt = 20100;
-double heading = 90;
-double mag_heading;
-double speedInKnots = 350;
-int tas;
-int CAT21TrackNumber;
-
-
-bool bDebug = false;
-bool bMODERN = true;
-bool bPeriodicList = false;
-
-
-byte _MSG[1500];
-int _MSGLength;
-
-int index = 0;
-int NumFRN;
-int TrackNumberStart = 200;
-
-///////////this should be a set not a vector
-std::vector<int> OptionalItemsToSend;      //this is empty unlesss populated outside of this file by settings in the UI or config file
-
-
-int  updateCounter = 0;
-int Cat21MsgCount = 0;
-enum CAT21Type { V0point23, V0point26, V2PLUS };
-unsigned char m_FRN[50];
-static int sendCount = -1;
-/////
-
-
-HANDLE ptrTimerHandleSendAircraft;
-int refreshPeriod = 2;
-int refreshCounter = 4;
-int dropAfterAge = 60;
-
 void __stdcall TimerCallbackUpdateAircraft(PVOID, BOOLEAN)//(PVOID lpParameter, BOOLEAN TimerOrWaitFired)
 {
     for (int x = 0; x < ACList.size(); x++)
     {
-        ACList[x].age++;
-        //if (ACList[x].age > dropAfterAge) ACList[x].markForDelete = true;
-        //or
-        if (ACList[x].age > dropAfterAge) ACList.erase(ACList.begin() + x);
-
+        //ACList[x].age++;
+        if (++ACList[x].age > dropAfterAge) ACList.erase(ACList.begin() + x);
     }
-
-
-    /*
-    for (int x = 0; x < ACList.size(); x++)
-    {
-        if (ACList[x].markForDelete)
-        {
-            printf("Deleting %s\r\n", ACList[x].hex.c_str());
-            ACList.erase(ACList.begin() + x);
-        }
-    }
-    */
 
     if (bPeriodicList)
     {
-        refreshCounter++;
-        if ((refreshCounter % refreshPeriod) == 0)
+        //refreshCounter++;
+        if ((++refreshCounter % refreshPeriod) == 0)
         {
             clear();
             ShowADSBList();
@@ -379,11 +345,6 @@ void __stdcall TimerCallbackUpdateAircraft(PVOID, BOOLEAN)//(PVOID lpParameter, 
     }
 }
 
-
-
-bool debug = false;
-int RxPacketCount = 0;
-int TxPacketCount = 0;
 
 
 
@@ -462,8 +423,8 @@ void ShowADSBList()
     if (bMODERN) printf("Generating Modern CAT21\r\n");
     else printf("Generating SITAWARE CAT21\r\n");
 
-    printf("Flight   ICAO      Cat      Squawk  Lat [d.d]  Lon [d.d]   IAS  GndSpd   HdgT #Updates    Age    TN   r_dst   r_dir\r\n");
-    printf("----------------------------------------------------------------------------------------------------------------------\r\n");
+    printf("Flight   ICAO     Cat      Squawk Lat [d.d] Lon [d.d]  Alt    IAS  GndSpd   HdgT #Updates    Age    TN   r_dst   r_dir\r\n");
+    printf("-----------------------------------------------------------------------------------------------------------------------\r\n");
     for (aircraft_ADSB ac : ACList)
     {
         if ((ac.ias < 0) || (ac.ias > 1000))
@@ -484,11 +445,11 @@ void ShowADSBList()
         else
             sprintf_s(Cat_s, "-------");
 
-        printf("%s %s  %s    %4s    %03.4f    %09.4f  %s   %4.1f  %s      %3d    %3d %5d   ",
-            flight_s, ac.hex.c_str(),  Cat_s, ac.squawk.c_str(), ac.lat, ac.lon, ias_s, ac.gs, HdgT_s, ac.NumUpdates, ac.age,ac.CAT21TrackNumber);
+        printf("%s %s %s    %4s   %03.4f   %09.4f  %5d %s   %4.1f  %s      %3d    %3d %5d   ",
+            flight_s, ac.hex.c_str(),  Cat_s, ac.squawk.c_str(), ac.lat, ac.lon, ac.alt_baro, ias_s, ac.gs, HdgT_s, ac.NumUpdates, ac.age,ac.CAT21TrackNumber);
         printf("%6.2f  %6.2f\r\n", ac.r_dst, ac.r_dir);
     }
-    printf("----------------------------------------------------------------------------------------------------------------------\r\n");
+    printf("-----------------------------------------------------------------------------------------------------------------------\r\n");
 
 }
 
@@ -557,8 +518,7 @@ BOOL FileExists(LPCTSTR szPath)
 }
 
 
-
-int main()
+void ReadIniFile()
 {
     printf("Attempting to read .ini file\r\n");
     LPCTSTR inipath = L".\\ADSBtoCAT21.ini";
@@ -566,7 +526,7 @@ int main()
     {
         std::cout << "no ini file ";
         std::wcout << inipath;
-        std::cout<< " found" << std::endl;
+        std::cout << " found" << std::endl;
     }
     else
     {
@@ -574,7 +534,7 @@ int main()
         std::wcout << inipath;
         std::cout << " found" << std::endl;
     }
-        
+
     wchar_t w_ADSB_IP[20];
     GetPrivateProfileString(L"Form", L"ADSB_IP", L"192.168.1.133", w_ADSB_IP, 20, inipath);
     size_t charsConverted = 0;
@@ -604,7 +564,7 @@ int main()
     int t = GetPrivateProfileInt(L"Form", L"CAT21_is_SITAWARE", 0, inipath);
     if (t == 1) bMODERN = false;
     else bMODERN = true;
-    
+
     if (bMODERN) printf("Generating Modern CAT21\r\n");
     else printf("Generating SITAWARE CAT21\r\n");
 
@@ -616,13 +576,20 @@ int main()
     printf("Done reading .ini file\r\n----------------------\r\n");
 
 
+}
+int main()
+{
+    ReadIniFile();
+
+
+
 
     const int UPDATE_INTERVAL = 1000; //this is ms //update Aircraft once per second
     CreateTimerQueueTimer(&ptrTimerHandleSendAircraft, NULL, TimerCallbackUpdateAircraft, NULL, 500, UPDATE_INTERVAL, WT_EXECUTEDEFAULT);
 
     initialise_winsock();
     
-    StartADSB(ADSB_IP, ADSB_Port);
+    StartADSBThread(ADSB_IP, ADSB_Port);
     OpenSocket(CAT21_IP, CAT21_Port);
 
     Sleep(1000);
@@ -658,7 +625,7 @@ DWORD WINAPI TCPListenThread(LPVOID lpParam)
             RxPacketCount++;
             if (a!=NULL)
             {
-                BuildCAT21FromADSB(a);
+                _MSGLength = BuildCAT21FromADSB(a);
                 SendUDP((char *) & _MSG[0], _MSGLength);
                 TxPacketCount++;
             }
@@ -693,7 +660,7 @@ bool compareAC(aircraft_ADSB left, aircraft_ADSB  right)
     }
 }
 
-int StartADSB(const char* host, unsigned int port)
+int StartADSBThread(const char* host, unsigned int port)
 {
     //initialise_winsock();
     TCPClientSocket = OpenTCPServerSocket((char*)host, port);
@@ -823,37 +790,67 @@ aircraft_ADSB* parseJSON(const char* jsonString)
     FileTimeToSystemTime(&ft, &ac.nowSystem);
     sprintf_s(ac.nowAsString, "%d-%02d-%02d %02d:%02d:%02d", ac.nowSystem.wYear, ac.nowSystem.wMonth, ac.nowSystem.wDay, ac.nowSystem.wHour, ac.nowSystem.wMinute, ac.nowSystem.wSecond);
 
-    if (d.HasMember("hex")) { s = d["hex"];    ac.hex = s.GetString(); }
+    if (d.HasMember("hex")) 
+        { 
+        s = d["hex"];    
+        ac.hex = s.GetString(); 
+        ac.ICAO = std::stoul(ac.hex, nullptr, 16);
+        }
     if (d.HasMember("type")) { s = d["type"];    ac.type = s.GetString(); } //this is message type
-    if (d.HasMember("flight")) { s = d["flight"];    ac.flight = s.GetString(); }
-    if (d.HasMember("alt_baro")) { s = d["alt_baro"];    ac.alt_baro = s.GetInt(); }
-    if (d.HasMember("alt_geom")) { s = d["alt_geom"];    ac.alt_geom = s.GetInt(); }
-    if (d.HasMember("gs")) { s = d["gs"];    ac.gs = s.GetDouble(); }
+    if (d.HasMember("flight")) 
+        { 
+        s = d["flight"];    
+        ac.flight = s.GetString(); 
+        for (int i = 0; i < ac.flight.size(); i++) {
+            char c = ac.flight[i];
+            ac.ACIdent[i] = c;
+        }
+        ac.ACIdent[7] = 0;
+        }
 
-    if (d.HasMember("ias")) { s = d["ias"];    ac.ias = s.GetInt(); }
-    if (d.HasMember("tas")) { s = d["tas"];    ac.tas = s.GetInt(); }
+    if (d.HasMember("alt_baro")) { s = d["alt_baro"];    ac.alt_baro = s.GetInt(); ac.bHasAltBaro = true; }
+    if (d.HasMember("alt_geom")) { s = d["alt_geom"];    ac.alt_geom = s.GetInt(); ac.bHasAltGeom = true;  }
+    if (d.HasMember("gs")) { s = d["gs"];    ac.gs = s.GetDouble(); ac.bHasGndSpd = true; }
 
-    if (d.HasMember("mach")) { s = d["mach"];    ac.mach = s.GetDouble(); }
+    if (d.HasMember("ias")) { s = d["ias"];    ac.ias = s.GetInt(); ac.bHasIAS = true;    }
+    if (d.HasMember("tas")) { s = d["tas"];    ac.tas = s.GetInt(); ac.bHasTAS = true;    }
 
-    ac.bTrackValid = false;
-    ac.bMagValid = false;
-    ac.bTrueValid = false;
+    if (d.HasMember("mach")) { s = d["mach"];    ac.mach = s.GetDouble(); ac.bHasMach = true; }
 
-    if (d.HasMember("track")) { s = d["track"];    ac.track = s.GetDouble(); ac.bTrackValid = true; }
-    if (d.HasMember("mag_heading")) { s = d["mag_heading"];    ac.mag_heading = s.GetDouble(); ac.bMagValid = true; }
-    if (d.HasMember("true_heading")) { s = d["true_heading"];    ac.true_heading = s.GetDouble(); ac.bTrueValid = true; }
+    if (d.HasMember("track")) { s = d["track"];    ac.track = s.GetDouble(); ac.bHasTrack = true; }
+    if (d.HasMember("mag_heading")) { s = d["mag_heading"];    ac.mag_heading = s.GetDouble(); ac.bHasMagHdg = true; }
+    if (d.HasMember("true_heading")) { s = d["true_heading"];    ac.true_heading = s.GetDouble(); ac.bHasTrueHdg = true; }
 
 
     if (d.HasMember("baro_rate")) { s = d["baro_rate"];    ac.baro_rate = s.GetInt(); }
     if (d.HasMember("squawk")) { 
-        s = d["squawk"];    ac.squawk = s.GetString(); 
-        ac.hasSquawk = true;
-    }
+        s = d["squawk"];    
+        ac.squawk = s.GetString(); 
+        ac.bHasSquawk = true;
+        //Mode3 is int
+        //squawk: Mode A code (Squawk), encoded as 4 octal digits
+            if (ac.squawk.size() < 4) {
+                ac.Mode3 = 0;
+            }
+            else
+            {
+                try
+                {
+                    ac.Mode3 = std::stoul(ac.squawk, nullptr, 8);
+                }
+                catch (...)
+                {
+                    puts("Exception in SQUAWK");
+                    ac.Mode3 = 0;
+                }
+            }
+        }
+
     if (d.HasMember("emergency")) { s = d["emergency"];    ac.emergency = s.GetString(); }
     if (d.HasMember("category")) {
         s = d["category"];
         ac.category = s.GetString();
-        ExpandCategory(ac.category, ac.categoryString);
+        ac.EmitterCatagory = ExpandCategory(ac.category, ac.categoryString);
     }
     if (d.HasMember("lat")) { s = d["lat"];    ac.lat = s.GetDouble(); }
     if (d.HasMember("lon")) { s = d["lon"];    ac.lon = s.GetDouble(); }
@@ -897,42 +894,62 @@ aircraft_ADSB* parseJSON(const char* jsonString)
 
 
 
-void ExpandCategory(std::string cat, std::string& catStr)
+int ExpandCategory(std::string cat, std::string& catStr)
 {
+    int EC = 0;
+
     if (cat[0] == 'A')
     {
         if (cat[1] == '0') catStr = "None";
-        else if (cat[1] == '1') catStr = "Light";
-        else if (cat[1] == '2') catStr = "Small";
-        else if (cat[1] == '3') catStr = "Large";
-        else if (cat[1] == '4') catStr = "Hi Vtx";
-        else if (cat[1] == '5') catStr = "Heavy";
-        else if (cat[1] == '6') catStr = "Hi Perf";
-        else if (cat[1] == '7') catStr = "Rotor";
+        else if (cat[1] == '1') { catStr = "Light"; EC = 1;}
+        else if (cat[1] == '2') {catStr = "Small"; EC = 2;
+        }
+        else if (cat[1] == '3') {catStr = "Large"; EC = 1;
+        }
+        else if (cat[1] == '4') {catStr = "Hi Vtx"; EC = 4;
+        }
+        else if (cat[1] == '5') {catStr = "Heavy"; EC = 5;
+        }
+        else if (cat[1] == '6') {catStr = "Hi Perf"; EC = 6;
+        }
+        else if (cat[1] == '7') {catStr = "Rotor"; EC = 10;
+        }
     }
     else if (cat[0] == 'B')
     {
         if (cat[1] == '0') catStr = "None";
-        else if (cat[1] == '1') catStr = "Glider";
-        else if (cat[1] == '2') catStr = "LTA";
-        else if (cat[1] == '3') catStr = "Para/Sky";
-        else if (cat[1] == '4') catStr = "Ultra-Light";
-        else if (cat[1] == '5') catStr = "RSV";
-        else if (cat[1] == '6') catStr = "UAV";
-        else if (cat[1] == '7') catStr = "Space/Trans";
+        else if (cat[1] == '1') {
+            catStr = "Glider"; EC = 11;
+        }
+        else if (cat[1] == '2') {
+            catStr = "LTA"; EC = 12;
+        }
+        else if (cat[1] == '3') {catStr = "Para/Sky"; EC = 16;}
+        else if (cat[1] == '4') {catStr = "Ultra-Light"; EC = 15;}
+        else if (cat[1] == '5') {catStr = "RSV"; EC = 0;}//reserved
+        else if (cat[1] == '6') {catStr = "UAV"; EC = 13;}
+        else if (cat[1] == '7') {catStr = "Space/Trans"; EC = 14;}
     }
     else if (cat[0] == 'C')
     {
         if (cat[1] == '0') catStr = "None";
-        else if (cat[1] == '1') catStr = "Surface/Emerg";
-        else if (cat[1] == '2') catStr = "Surface/Service";
-        else if (cat[1] == '3') catStr = "Point";
-        else if (cat[1] == '4') catStr = "Cluster Obs";
-        else if (cat[1] == '5') catStr = "Line Obs";
-        else if (cat[1] == '6') catStr = "Rsv";
-        else if (cat[1] == '7') catStr = "Rsv";
+        else if (cat[1] == '1') {catStr = "Surface/Emerg"; EC = 20;
+        }
+        else if (cat[1] == '2') {catStr = "Surface/Service"; EC = 21;
+        }
+        else if (cat[1] == '3') {catStr = "Point"; EC = 22;
+        }
+        else if (cat[1] == '4') {catStr = "Cluster Obs"; EC = 23;
+        }
+        else if (cat[1] == '5') {catStr = "Line Obs"; EC = 24;
+        }
+        else if (cat[1] == '6') {catStr = "Rsv"; EC = 0;//reserved
+        }
+        else if (cat[1] == '7') {catStr = "Rsv"; EC = 0;//reserved
+        }
     }
     else catStr = "ZZZ";
+    return EC;
 }
 
 
@@ -970,25 +987,14 @@ aircraft_ADSB* FindAircraftByHex(std::string hex)
 
 
 
-void InitFRN()
-//builds a bit map lookup table for each of the FRNs. ASX CAT 21 supports 49 FRNs: 1 thru 49
-{
-    for (int x = 1; x <= 49; x++)
-    {
-        m_FRN[x] = 0b10000000 >> ((x - 1) % 7);
-    }
-}
-
 void InsertSAC_SIC_DI010()
 {
     _MSG[index++] = (byte)sac;
     _MSG[index++] = (byte)sic;
-    //printf("SIC: %X  SAC: %X \r\n", (int)sic,(int)sac);
-    //printf("SIC: %X  SAC: %X \r\n", (int)_MSG[index-1], (int)_MSG[index - 2]);
 }
 
 //THIS is HARD CODED
-void InsertEmitterCategoryDI020()
+void InsertEmitterCategoryDI020(int EC)
 {
     /*
     0 = No ADS - B Emitter Category Information
@@ -1013,7 +1019,7 @@ void InsertEmitterCategoryDI020()
     23 = cluster obstacle
     24 = line obstacle
     */
-    _MSG[index++] = 0;
+    _MSG[index++] = EC;
 }
 
 
@@ -1038,7 +1044,7 @@ void InsertTargetReportDescriptorDI040()
     _MSG[index++] = 0x00;
 }
 
-void InsertMode3ADI070()//optional field for modern and old CAT 21
+void InsertMode3ADI070(int Mode3)//optional field for modern and old CAT 21
 {
     _MSG[index++] = (byte)(Mode3 / 256);
     _MSG[index++] = (byte)(Mode3 - _MSG[index - 1] * 256);
@@ -1068,7 +1074,7 @@ void InsertTimeOfMsgReceptionDI075()
     _MSG[index++] = (byte)(TOD_16 - (_MSG[index - 2] * 256 * 256) - (_MSG[index - 1] * 256));
 }
 
-void InsertAC_ICAO_Address_DI80()
+void InsertAC_ICAO_Address_DI80(int ICAO)
 {
     //Tgt Address  24 bit ICAO
     _MSG[index++] = (byte)((ICAO & 0xFF0000) >> 16);
@@ -1088,7 +1094,7 @@ void InsertFOM_DI090()
 
 }
 
-void InsertPositionDI130_3BytePos()
+void InsertPositionDI130_3BytePos(double latitude, double longitude)
 //Position in WGS-84 Co-ordinates
 {
     int Lat = (int)(latitude / 0.0000214576721191406);  //this number is 180/2^23
@@ -1102,7 +1108,7 @@ void InsertPositionDI130_3BytePos()
     _MSG[index++] = (byte)((Lon & 0x0000FF));
 }
 
-void InsertPositionDI130_4BytePos()
+void InsertPositionDI130_4BytePos(double latitude, double longitude)
 //High-Resolution Position in WGS-84 Co-ordinates
 {
     int Lat = (int)(latitude / 0.00000536441802978515625); //this number is 180/2^25
@@ -1124,7 +1130,7 @@ void InsertPositionDI130_4BytePos()
     _MSG[index++] = (byte)((Lon & 0x000000FF));
 }
 
-void InsertGeoHeightDI140()
+void InsertGeoHeightDI140(int alt)
 //Minimum height from a plane tangent to the earth’s ellipsoid, defined by WGS - 84, in two’s complement form.
 //lsb is 6.25 feet
 {
@@ -1135,12 +1141,11 @@ void InsertGeoHeightDI140()
     _MSG[index++] = lsb;
 }
 
-void InsertFLDI145()
+void InsertFLDI145(double alt_baro)
 //Flight Level from barometric measurements, not QNH corrected,in two’s complement form.
 //lsb is 1/4 FL (25 feet)
 {
-    //int gcount = (int)(alt / 6.25);
-    int gcount = alt / 25;
+    int gcount = alt_baro / 25;
     byte msb = (byte)(gcount / 256);
     byte lsb = gcount % 256;
     _MSG[index++] = msb;
@@ -1148,7 +1153,7 @@ void InsertFLDI145()
 }
 
 
-void InsertTASDI151()
+void InsertTASDI151(int tas)
 //Definition : True Air Speed.
 //Format : Two - Octet fixed length data item
 //lsb is 1 knot
@@ -1159,7 +1164,7 @@ void InsertTASDI151()
     _MSG[index++] = lsb;
 }
 
-void InsertMagHdgDI152()
+void InsertMagHdgDI152(double mag_heading)
 //Definition : Magnetic Heading(Element of Air Vector).
 //Format : Two - Octet fixed length data item.
 //lsb = 360° / 216 (approx. 0.0055°)
@@ -1180,9 +1185,9 @@ void InsertBarometricVerticalRateDI155()
     _MSG[index++] = 0x00;
 }
 
-void InsertAirborneGroundVectorDI160()
+void InsertAirborneGroundVectorDI160(int gndSpdInKnots, int heading)
 {
-    int AGVSpeed = (int)(speedInKnots / 0.22);
+    int AGVSpeed = (int)(gndSpdInKnots / 0.22);
     _MSG[index++] = (byte)((AGVSpeed & 0xFF00) >> 8);
     _MSG[index++] = (byte)((AGVSpeed & 0x00FF));
 
@@ -1191,7 +1196,7 @@ void InsertAirborneGroundVectorDI160()
     _MSG[index++] = (byte)((angle & 0x00FF)); //  % 256);
 }
 
-void InsertTrackNumberDI161()
+void InsertTrackNumberDI161(int CAT21TrackNumber)
 {
     _MSG[index++] = (byte)((CAT21TrackNumber & 0xFF00) >> 8);  //Track Number MSB
     _MSG[index++] = (byte)(CAT21TrackNumber & 0x00FF);         //Track Number LSB
@@ -1213,7 +1218,7 @@ byte ICAOencode(char c)
     }
 }
 
-void Insert_ACIdent_DI170()
+void Insert_ACIdent_DI170(char * ACIdent)
 {
     byte c[8];
 
@@ -1269,92 +1274,78 @@ void UpdateMsgLength(int _Length)
 ////////////////
 
 
-bool BuildCAT21FromADSB(aircraft_ADSB* ADSB_AC)
+int BuildCAT21FromADSB(aircraft_ADSB* ADSB_AC)
 {
-    ICAO = std::stoul(ADSB_AC->hex, nullptr, 16);
+    char buf[300];
+    SYSTEMTIME st;
+    int MsgLength = 0;
 
-    for (int i = 0; i < ADSB_AC->flight.size(); i++) {
-        char c = ADSB_AC->flight[i];
-        ACIdent[i] = c;
-    }
-    ACIdent[7] = 0;
-
-    
-    //Mode3 is int
-    //squawk: Mode A code (Squawk), encoded as 4 octal digits
-
-    if (ADSB_AC->hasSquawk) {
-        if (ADSB_AC->squawk.size() < 4) {
-            Mode3 = 0;
+    if (bMODERN)
+    {
+        MsgLength = CreateCAT21Modern(ADSB_AC);
+        if (debug) {
+            GetSystemTime(&st);
+            sprintf_s(buf, "Sending CAT21 V2+ #%02d at time %02d:%02d:%02d.%d\r\n", Cat21MsgCount, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+            puts(buf);
         }
-        else   
-        {
-            try
-            {
-                Mode3 = std::stoul(ADSB_AC->squawk, nullptr, 8);
-            }
-            catch (...)
-            {
-                puts("Exception in SQUAWK");
-                Mode3 = 0;
-            }
+    }
+    else //SITAWARE
+    {
+        MsgLength = CreateCAT21SITAWARE(ADSB_AC);
+        if (debug) {
+            GetSystemTime(&st);
+            sprintf_s(buf, "Sending CAT21 V0.26 #%02d at time %02d:%02d:%02d.%d\r\n", Cat21MsgCount, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+            puts(buf);
         }
     }
 
-    latitude = ADSB_AC->lat;
-    longitude = ADSB_AC->lon;
-    alt = ADSB_AC->alt_baro;
-    heading = ADSB_AC->true_heading;
-    speedInKnots = ADSB_AC->ias;
-    tas = ADSB_AC->tas;
-    mag_heading = ADSB_AC->mag_heading;
-    CAT21TrackNumber = ADSB_AC->CAT21TrackNumber;
-    _MSGLength = CreateCAT21(&_MSG[0]);
-
-    return false;
+    Cat21MsgCount++;
+    return MsgLength;
 }
 
-void CreateCAT21Modern() //this is compliant to V2.X
+
+int CreateCAT21Modern(aircraft_ADSB *ADSB_AC) //this is compliant to V2.X
 {
-    InitFRN();
-    NumFRN = 42;          //ASX CAT 21 UAP shows 42 of 49 FRNs are available, 5 FRNs (FRN 43-47) in the last word are not used
-    
-    OptionalItemsToSend.clear();
-    OptionalItemsToSend.push_back(19); //this is FRN 19
-    NumFRN++;
+    std::vector<int> FRNsToSend;      //this is empty unlesss populated outside of this file by settings in the UI or config file
+    FRNsToSend.clear();
 
     //this CAT21 is compliant to V0.26
-    index = 0; //reset the index
-    _MSG[index++] = 21;     //ASTERIX CAT 21
-    _MSG[index++] = 0;      //LEN MSB    these are placeholders that will be filled in later
-    _MSG[index++] = 0;      //LEN LSB
+    FRNsToSend.push_back(1);
+    FRNsToSend.push_back(2);
+    FRNsToSend.push_back(3);
+    FRNsToSend.push_back(6);
+    FRNsToSend.push_back(11);
+    FRNsToSend.push_back(12);
+    FRNsToSend.push_back(14);
+    FRNsToSend.push_back(16);
+    FRNsToSend.push_back(24);
+    FRNsToSend.push_back(26);
+    FRNsToSend.push_back(29);
+    FRNsToSend.push_back(30);
+      
+    if (ADSB_AC->bHasSquawk) FRNsToSend.push_back(19); //this is FRN 19
+    if (ADSB_AC->bHasAltBaro) FRNsToSend.push_back(21); //this is FRN 21 is FL
+    if (ADSB_AC->bHasMagHdg) FRNsToSend.push_back(22); //this is FRN 22 is FL
 
     //build the FSPEC (next ~75 lines)
     int FSPEC[7] = { 0,0,0,0,0,0,0 };
 
-    //Add the mandatory items to FSPEC
-    for (int x = 0; x < NumFRN; x++)
+    unsigned char m_FRN[50];
+    //builds a bit map lookup table for each of the FRNs. ASX CAT 21 supports 49 FRNs: 1 thru 49
+    for (int x = 1; x <= 49; x++) m_FRN[x] = 0b10000000 >> ((x - 1) % 7);
+
+    for (int frn : FRNsToSend)
     {
-        int frn = x + 1; //x is zero indexed, FRNs start at 1
-        if (MsgDetModern[x].state == MANDATORY)
-        {
-            int index = (frn - 1) / 7;
-            FSPEC[index] |= m_FRN[frn];
-        }
+        int _index = (frn-1) / 7;
+
+        FSPEC[_index] |= m_FRN[frn];
+        //printf("Adding FRN %d  index: %d, FRN Bits:%X\r\n", frn, _index, m_FRN[frn]);
     }
 
-    //Add the selected optional items to FSPEC
-    for (int frn : OptionalItemsToSend)
-    {
-        int index = (frn) / 7;
-        FSPEC[index] |= m_FRN[frn];
-        //printf("Adding Optional FRN %d\r\n", frn);
-    }
 
-    //add the extension bit if required
-    if (FSPEC[6] != 0)
+    //set the extension bits if required
+    if (FSPEC[6] != 0)//there is at least 1 FRN in the 7th word (index is 6 because zero indexing)
     {
-        //printf("FSPEC[6]: %02X\r\n", FSPEC[6]);
         FSPEC[5] |= FRNFX;
         FSPEC[4] |= FRNFX;
         FSPEC[3] |= FRNFX;
@@ -1364,7 +1355,6 @@ void CreateCAT21Modern() //this is compliant to V2.X
     }
     else if (FSPEC[5] != 0)
     {
-        //printf("FSPEC[5]: %02X\r\n", FSPEC[5]);
         FSPEC[4] |= FRNFX;
         FSPEC[3] |= FRNFX;
         FSPEC[2] |= FRNFX;
@@ -1373,7 +1363,6 @@ void CreateCAT21Modern() //this is compliant to V2.X
     }
     else if (FSPEC[4] != 0)
     {
-        //printf("FSPEC[4]: %02X\r\n", FSPEC[4]);
         FSPEC[3] |= FRNFX;
         FSPEC[2] |= FRNFX;
         FSPEC[1] |= FRNFX;
@@ -1381,23 +1370,26 @@ void CreateCAT21Modern() //this is compliant to V2.X
     }
     else if (FSPEC[3] != 0)
     {
-       //printf("FSPEC[3]: %02X\r\n", FSPEC[3]);
         FSPEC[2] |= FRNFX;
         FSPEC[1] |= FRNFX;
         FSPEC[0] |= FRNFX;
     }
     else if (FSPEC[2] != 0)
     {
-        //printf("FSPEC[2]: %02X\r\n", FSPEC[2]);
         FSPEC[1] |= FRNFX;
         FSPEC[0] |= FRNFX;
     }
     else if (FSPEC[1] != 0)
     {
-        //printf("FSPEC[1]: %02X\r\n", FSPEC[1]);
         FSPEC[0] |= FRNFX;
     }
 
+    //Start building the ASTERIX Message
+    index = 0; //reset the index
+    _MSG[index++] = 21;     //ASTERIX CAT 21
+    _MSG[index++] = 0;      //LEN MSB    these are placeholders that will be filled in later
+    _MSG[index++] = 0;      //LEN LSB
+    
     //Insert the FSPEC into the Message
     _MSG[index++] = FSPEC[0];
     if (FSPEC[0] & FRNFX) _MSG[index++] = FSPEC[1];
@@ -1407,74 +1399,124 @@ void CreateCAT21Modern() //this is compliant to V2.X
     if (FSPEC[4] & FRNFX) _MSG[index++] = FSPEC[5];
     if (FSPEC[5] & FRNFX) _MSG[index++] = FSPEC[6];
 
+    //FRN1
     InsertSAC_SIC_DI010();
-
+    
+    //FRN2
     InsertTargetReportDescriptorDI040();
 
-    InsertTrackNumberDI161();
+    //FRN3
+    InsertTrackNumberDI161(ADSB_AC->CAT21TrackNumber);
+    
+    //FRN6
+    InsertPositionDI130_3BytePos(ADSB_AC->lat,ADSB_AC->lon);
 
-    InsertPositionDI130_3BytePos();
+    //FRN9: Air Speed (so is this IAS?)
+    //FRN10: True Air Speed
+    //FRN11
+    InsertAC_ICAO_Address_DI80(ADSB_AC->ICAO);
 
-    InsertAC_ICAO_Address_DI80();
-
+    //FRN12
     InsertTimeOfMsgReceptionDI073();//073 Time of MSG Reception for Position
-
+    
+    //FRN13:
+    
+    //FRN14
     InsertTimeOfMsgReceptionDI075();//075 Time of MSG Reception for Velocity
 
-    InsertGeoHeightDI140();
-
-    //look for FRN19 and if it Is present in the optional list insert it into the CAT21
-    if (std::find(OptionalItemsToSend.begin(), OptionalItemsToSend.end(), 19) != OptionalItemsToSend.end()) 
-        InsertMode3ADI070();
+    //FRN15:
     
-    
-    InsertFLDI145();
+    //FRN16
+    InsertGeoHeightDI140(ADSB_AC->alt_geom);
 
+    //FRN17:
+    //FRN18:
+
+    //FRN19
+    if (std::find(FRNsToSend.begin(), FRNsToSend.end(), 19) != FRNsToSend.end()) 
+        InsertMode3ADI070(ADSB_AC->Mode3);
+    
+    //FRN20: Roll Angle
+
+    //FRN21
+    if (std::find(FRNsToSend.begin(), FRNsToSend.end(), 21) != FRNsToSend.end())
+        InsertFLDI145(ADSB_AC->alt_baro);
+
+    //FRN 22
+    if (std::find(FRNsToSend.begin(), FRNsToSend.end(), 22) != FRNsToSend.end())
+        InsertMagHdgDI152(ADSB_AC->mag_heading);
+
+    //FRN23:
+    
+
+    //FRN24
     InsertBarometricVerticalRateDI155();
 
-    InsertAirborneGroundVectorDI160();
+    //FRN25:Geo Vertical Rate
 
-    Insert_ACIdent_DI170();
+    //FRN26
+    InsertAirborneGroundVectorDI160(ADSB_AC->ias, ADSB_AC->true_heading); // ias and true heading may be wrong
+    
+    //FRN27
+    //FRN28
+     
+    
+    //FRN29
+    Insert_ACIdent_DI170(ADSB_AC->ACIdent);
 
-    InsertEmitterCategoryDI020();
+    //FRN30
+    InsertEmitterCategoryDI020(ADSB_AC->EmitterCatagory);
 
     UpdateMsgLength(index);
+    return index;
 }
 
 
-void CreateCAT21SITAWARE()
+int CreateCAT21SITAWARE(aircraft_ADSB *ADSB_AC)
 {
-    InitFRN();
-    NumFRN = 28;
+    std::vector<int> FRNsToSend;      //this is empty unlesss populated outside of this file by settings in the UI or config file
+    FRNsToSend.clear();
 
-    //this CAT21 is complaint to V0.26
-    index = 0; //reset the index
-    _MSG[index++] = 21;     //ASTERIX CAT 21
-    _MSG[index++] = 0;      //LEN MSB
-    _MSG[index++] = 0;      //LEN LSB
+    //this CAT21 is compliant to Sitaware
+    FRNsToSend.push_back(1);
+    FRNsToSend.push_back(2);
+    FRNsToSend.push_back(3);
+    FRNsToSend.push_back(4);
+    FRNsToSend.push_back(5);
+    FRNsToSend.push_back(7);
+    FRNsToSend.push_back(8);
+    FRNsToSend.push_back(18);
+    FRNsToSend.push_back(21);
+    FRNsToSend.push_back(22);
 
-    //build and insert the FSPEC
+
+    //if (ADSB_AC->bHasSquawk) 
+        FRNsToSend.push_back(6);
+    //if (ADSB_AC->bHasSquawk) 
+        FRNsToSend.push_back(10);
+    //if (ADSB_AC->bHasAltBaro) 
+        FRNsToSend.push_back(16);
+    //if (ADSB_AC->bHasMagHdg) 
+        FRNsToSend.push_back(22); 
+    //if (ADSB_AC->bHasMagHdg) 
+        FRNsToSend.push_back(27); 
+
+    //build the FSPEC (next ~75 lines)
     int FSPEC[6] = { 0,0,0,0,0,0 };
 
-    //Add the mandatory items to FSPEC
-    for (int x = 0; x < NumFRN; x++)
+    unsigned char m_FRN[50];
+    //builds a bit map lookup table for each of the FRNs. ASX CAT 21 supports 49 FRNs: 1 thru 49
+    for (int x = 1; x <= 49; x++) m_FRN[x] = 0b10000000 >> ((x - 1) % 7);
+
+    for (int frn : FRNsToSend)
     {
-        int frn = x + 1; //x is zero indexed, FRNs start at 1
-        if (MsgDetSitaware[x].state == MANDATORY)
-        {
-            int index = (frn - 1) / 7;
-            FSPEC[index] |= m_FRN[frn];
-        }
+        int _index = (frn - 1) / 7;
+        FSPEC[_index] |= m_FRN[frn];
+        //printf("Adding FRN %d  index: %d, FRN Bits:%X\r\n", frn, _index, m_FRN[frn]);
     }
 
-    //Add the selected optional items to FSPEC
-    //std::lock_guard<std::mutex> lck(mtx);
-    for (int x : OptionalItemsToSend)
-    {
-        int frn = x + 1; //x is zero indexed, FRNs start at 1
-        int index = (frn - 1) / 7;
-        FSPEC[index] |= m_FRN[frn];
-    }
+
+
 
     //add the extension bit if required
     if (FSPEC[5] != 0)
@@ -1508,6 +1550,14 @@ void CreateCAT21SITAWARE()
         FSPEC[0] |= FRNFX;
     }
 
+
+    //Start building the ASTERIX Message
+    index = 0; //reset the index
+    _MSG[index++] = 21;     //ASTERIX CAT 21
+    _MSG[index++] = 0;      //LEN MSB    these are placeholders that will be filled in later
+    _MSG[index++] = 0;      //LEN LSB
+
+
     _MSG[index++] = FSPEC[0];
     if (FSPEC[0] & FRNFX) _MSG[index++] = FSPEC[1];
     if (FSPEC[1] & FRNFX) _MSG[index++] = FSPEC[2];
@@ -1517,52 +1567,31 @@ void CreateCAT21SITAWARE()
     InsertSAC_SIC_DI010(); //FRN 1 Mandatory
     InsertTargetReportDescriptorDI040(); //FRN 2 M
     InsertTimeOfDayDI030(); //FRN 3 M
-    InsertPositionDI130_4BytePos();   //FRN 4 M
-    InsertAC_ICAO_Address_DI80(); // FRN 5 M
+    InsertPositionDI130_4BytePos(ADSB_AC->lat,ADSB_AC->lon);   //FRN 4 M
+    InsertAC_ICAO_Address_DI80(ADSB_AC->ICAO); // FRN 5 M
 
-    if (FSPEC[0] & FRN6) InsertGeoHeightDI140();  // FRN 6 Optional
+    if (std::find(FRNsToSend.begin(), FRNsToSend.end(), 6) != FRNsToSend.end())
+        InsertGeoHeightDI140(ADSB_AC->alt_geom); // FRN 6 Optional
 
     InsertFOM_DI090();   //FRN 7 M
     InsertLinkTechnologyDI210();    // FRN 8 M
 
-    if (FSPEC[1] & FRN10) InsertFLDI145();// FRN 10 Optional
-    if (FSPEC[2] & FRN16) InsertAirborneGroundVectorDI160();// FRN 16 Optional
 
-    Insert_ACIdent_DI170(); //FRN 18 M
+    if (std::find(FRNsToSend.begin(), FRNsToSend.end(), 10) != FRNsToSend.end()) 
+        InsertFLDI145(ADSB_AC->alt_baro);// FRN 10 Optional
+    if (std::find(FRNsToSend.begin(), FRNsToSend.end(), 16) != FRNsToSend.end()) 
+        InsertAirborneGroundVectorDI160(ADSB_AC->ias, ADSB_AC->true_heading);// FRN 16 Optional  ias and true heading may be wrong
+
+    Insert_ACIdent_DI170(ADSB_AC->ACIdent);//FRN 18 M
     InsertTargetStatusDI200(); // FRN 21 M
-    InsertEmitterCategoryDI020(); //FRN 22
+    InsertEmitterCategoryDI020(ADSB_AC->EmitterCatagory); //FRN 22
 
-    if (FSPEC[3] & FRN27) InsertMode3ADI070();
+    if (std::find(FRNsToSend.begin(), FRNsToSend.end(), 27) != FRNsToSend.end())
+        InsertMode3ADI070(ADSB_AC->Mode3);
 
     UpdateMsgLength(index);
-}
-
-
-int CreateCAT21(byte* m)
-{
-    char buf[300];
-    SYSTEMTIME st;
-    GetSystemTime(&st);
-
-
-    if (bMODERN)
-    {
-        CreateCAT21Modern();
-        Cat21MsgCount++;
-        sprintf_s(buf, "Sending CAT21 V2+ #%02d at time %02d:%02d:%02d.%d\r\n", Cat21MsgCount, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    }
-    else
-    {
-        CreateCAT21SITAWARE();
-        Cat21MsgCount++;
-        sprintf_s(buf, "Sending CAT21 V0.26 #%02d at time %02d:%02d:%02d.%d\r\n", Cat21MsgCount, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    }
-
-    if (bDebug) puts(buf);
-
     return index;
 }
-
 
 
 

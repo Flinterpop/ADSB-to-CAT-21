@@ -1,0 +1,3 @@
+﻿  ADSBtoCAT21.cpp
+C:\source\gitinternal\ADSB-to-CAT-21\ADSBtoCAT21.cpp(761,34): warning C4244: '=': conversion from 'SOCKET' to 'int', possible loss of data
+  ADSBtoCAT21.vcxproj -> C:\source\gitinternal\ADSB-to-CAT-21\x64\Debug\ADSBtoCAT21.exe
