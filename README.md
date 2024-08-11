@@ -1,5 +1,5 @@
 # ADSB-to-CAT-21
-Connects to ADSB Receiver and then creates ASTERIX CAT 21 messages for each ADSB Track
+Connects to ADSB Receiver listening to raw HEX packets then creates ASTERIX CAT 21 messages for each ADSB Track
 This is a console application that reads config data from an ini file located in the same folder as the exe.
 The ini file is optional - defaults will be used if it is not present
 
